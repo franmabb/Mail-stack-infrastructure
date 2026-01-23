@@ -1,0 +1,143 @@
+---
+- name: Configuración Común
+  hosts: all
+  become: yes
+  tasks:
+    - name: Actualizar repositorios
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+# ---------------------------------------------------------
+# CONFIGURACIÓN SERVIDOR DNS (BIND9) - Requisitos 1.1.1 y 1.2
+# ---------------------------------------------------------
+- name: Configurar Servidor DNS
+  hosts: dns
+  become: yes
+  vars:
+    domain_name: "franciscomateos.test"
+    mail_ip: "192.168.57.11"
+  tasks:
+    - name: Instalar Bind9
+      apt:
+        name: 
+          - bind9
+          - bind9-utils
+        state: present
+
+    - name: Configurar named.conf.local (Zona directa)
+      blockinfile:
+        path: /etc/bind/named.conf.local
+        block: |
+          zone "{{ domain_name }}" {
+              type master;
+              file "/etc/bind/db.{{ domain_name }}";
+          };
+
+    - name: Crear archivo de zona (Registros A y CNAME)
+      copy:
+        dest: "/etc/bind/db.{{ domain_name }}"
+        content: |
+          ;
+          ; BIND data file for local loopback interface
+          ;
+          $TTL    604800
+          @       IN      SOA     ns.{{ domain_name }}. root.{{ domain_name }}. (
+                                2         ; Serial
+                           604800         ; Refresh
+                            86400         ; Retry
+                          2419200         ; Expire
+                           604800 )       ; Negative Cache TTL
+          ;
+          @       IN      NS      ns.{{ domain_name }}.
+          @       IN      A       192.168.57.10
+          ns      IN      A       192.168.57.10
+          
+          ; Requisitos 1.2.1 y 1.2.2 (Registros A)
+          postfix IN      A       {{ mail_ip }}
+          dovecot IN      A       {{ mail_ip }}
+          mail    IN      A       {{ mail_ip }}
+
+          ; Requisitos 1.2.3, 1.2.4, 1.2.5 (CNAMEs)
+          smtp    IN      CNAME   postfix
+          pop     IN      CNAME   dovecot
+          imap    IN      CNAME   dovecot
+
+    - name: Reiniciar Bind9
+      service:
+        name: bind9
+        state: restarted
+
+# ---------------------------------------------------------
+# CONFIGURACIÓN SERVIDOR CORREO (POSTFIX/DOVECOT) - Requisitos 1.3 y 1.4
+# ---------------------------------------------------------
+- name: Configurar Servidor de Correo
+  hosts: mail
+  become: yes
+  vars:
+    domain_name: "franciscomateos.test"
+  tasks:
+    # Pre-configuración de Postfix para evitar modo interactivo
+    - name: Configurar debconf para Postfix
+      debconf:
+        name: postfix
+        question: "{{ item.question }}"
+        value: "{{ item.value }}"
+        vtype: string
+      loop:
+        - { question: "postfix/mailname", value: "{{ domain_name }}" }
+        - { question: "postfix/main_mailer_type", value: "Internet Site" }
+
+    - name: Instalar Postfix y Dovecot
+      apt:
+        name:
+          - postfix
+          - dovecot-core
+          - dovecot-imapd
+          - dovecot-pop3d
+        state: present
+
+    # Configuración Postfix (Requisitos 1.3)
+    - name: Configurar Postfix para Maildir (Req 1.3.1)
+      command: postconf -e "home_mailbox = Maildir/"
+
+    - name: Configurar Redes permitidas (Req 1.3.2)
+      # Se incluye la red local, la 192.168.57.0/24 y la extraña 10.112.0.0/16
+      command: postconf -e "mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128 192.168.57.0/24 10.112.0.0/16"
+
+    - name: Configurar interfaces
+      command: postconf -e "inet_interfaces = all"
+
+    # Configuración Dovecot (Requisitos 1.4)
+    - name: Configurar Dovecot Maildir (Req 1.4.1)
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-mail.conf
+        regexp: '^mail_location ='
+        line: 'mail_location = maildir:~/Maildir'
+
+    - name: Activar SSL/TLS en Dovecot (Req 1.4.2)
+      # Usamos el certificado "snakeoil" que viene por defecto en Ubuntu para prácticas
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-ssl.conf
+        regexp: '^ssl ='
+        line: 'ssl = yes'
+
+    # Creación de usuarios (Requisito 1.3.3)
+    - name: Crear usuarios de prueba
+      user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        password: "{{ '1234' | password_hash('sha512') }}" # Contraseña 1234
+        generate_ssh_key: yes
+      loop:
+        - usuario1
+        - usuario2
+
+    - name: Reiniciar servicios
+      service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - postfix
+        - dovecot
+# ---------------------------------------------------------
