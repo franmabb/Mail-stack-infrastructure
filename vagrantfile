@@ -1,0 +1,29 @@
+# Vagrantfile
+Vagrant.configure("2") do |config|
+  config.vm.box = "geerlingguy/ubuntu2004" # Ubuntu ligero y compatible
+
+  # Máquina Servidor DNS
+  config.vm.define "dns" do |dns|
+    dns.vm.hostname = "dns-server"
+    dns.vm.network "private_network", ip: "192.168.57.10"
+    
+    # Provisionamiento con Ansible
+    dns.vm.provision "ansible" do |ansible|
+      ansible.playbook = "playbook.yml"
+      ansible.inventory_path = "inventory.ini"
+      ansible.limit = "dns"
+    end
+  end
+
+  # Máquina Servidor de Correo
+  config.vm.define "mail" do |mail|
+    mail.vm.hostname = "mail-server"
+    mail.vm.network "private_network", ip: "192.168.57.11"
+    
+    mail.vm.provision "ansible" do |ansible|
+      ansible.playbook = "playbook.yml"
+      ansible.inventory_path = "inventory.ini"
+      ansible.limit = "mail"
+    end
+  end
+end
